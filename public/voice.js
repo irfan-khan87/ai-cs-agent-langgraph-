@@ -1,70 +1,65 @@
 /**
- * Sole Syntax Voice Interface
- * Uses browser-native Web Speech API — no API keys required.
- * Injected into Chainlit via public/ folder.
+ * Sole Syntax Voice Interface — floating mic button
+ * Uses browser Web Speech API (STT) + speechSynthesis (TTS). Zero cost.
  */
-
 (function () {
   const SpeechRecognition =
     window.SpeechRecognition || window.webkitSpeechRecognition;
 
-  if (!SpeechRecognition) {
-    console.warn("Web Speech API not supported in this browser.");
-    return;
-  }
+  // ── Floating mic button ────────────────────────────────────────────────────
+  function createFloatingButton() {
+    if (document.getElementById("sole-mic-fab")) return;
 
-  let recognition = null;
-  let isListening = false;
-  let btn = null;
-
-  function speak(text) {
-    if (!window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    utterance.lang = "en-US";
-    // Pick a natural voice if available
-    const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find(
-      (v) => v.name.includes("Samantha") || v.name.includes("Google US English")
-    );
-    if (preferred) utterance.voice = preferred;
-    window.speechSynthesis.speak(utterance);
-  }
-
-  function injectButton() {
-    // Wait for Chainlit's input area to render
-    const inputArea = document.querySelector(".MuiStack-root");
-    if (!inputArea || document.getElementById("sole-voice-btn")) return;
-
-    btn = document.createElement("button");
-    btn.id = "sole-voice-btn";
-    btn.title = "Speak your request";
-    btn.innerHTML = "🎤";
-    btn.style.cssText = `
-      background: #1a1a2e;
-      border: 1.5px solid #7c3aed;
+    const fab = document.createElement("button");
+    fab.id = "sole-mic-fab";
+    fab.title = "Speak your request (Web Speech API)";
+    fab.innerHTML = "🎤";
+    fab.style.cssText = `
+      position: fixed;
+      bottom: 110px;
+      right: 24px;
+      z-index: 9999;
+      width: 52px;
+      height: 52px;
       border-radius: 50%;
-      width: 38px;
-      height: 38px;
-      font-size: 18px;
+      background: linear-gradient(135deg, #7c3aed, #4f46e5);
+      border: none;
+      color: white;
+      font-size: 22px;
       cursor: pointer;
+      box-shadow: 0 4px 14px rgba(124,58,237,0.5);
       display: flex;
       align-items: center;
       justify-content: center;
-      margin-left: 6px;
-      transition: background 0.2s;
-      flex-shrink: 0;
+      transition: transform 0.15s, box-shadow 0.15s;
     `;
+    fab.addEventListener("mouseenter", () => {
+      fab.style.transform = "scale(1.1)";
+      fab.style.boxShadow = "0 6px 20px rgba(124,58,237,0.7)";
+    });
+    fab.addEventListener("mouseleave", () => {
+      fab.style.transform = "scale(1)";
+      fab.style.boxShadow = "0 4px 14px rgba(124,58,237,0.5)";
+    });
 
-    btn.addEventListener("click", toggleListening);
-    inputArea.appendChild(btn);
+    if (!SpeechRecognition) {
+      fab.title = "Voice not supported in this browser";
+      fab.style.opacity = "0.4";
+      fab.style.cursor = "not-allowed";
+    } else {
+      fab.addEventListener("click", toggleListening);
+    }
+
+    document.body.appendChild(fab);
   }
+
+  // ── Speech recognition ─────────────────────────────────────────────────────
+  let recognition = null;
+  let isListening = false;
 
   function toggleListening() {
     if (isListening) {
-      recognition.stop();
+      recognition && recognition.stop();
     } else {
       startListening();
     }
@@ -78,84 +73,110 @@
 
     recognition.onstart = () => {
       isListening = true;
-      if (btn) {
-        btn.innerHTML = "🔴";
-        btn.style.borderColor = "#ef4444";
+      const fab = document.getElementById("sole-mic-fab");
+      if (fab) {
+        fab.innerHTML = "🔴";
+        fab.style.background = "linear-gradient(135deg, #ef4444, #dc2626)";
+        fab.style.boxShadow = "0 4px 14px rgba(239,68,68,0.6)";
       }
     };
 
-    recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
+    recognition.onresult = (e) => {
+      const transcript = e.results[0][0].transcript;
       fillAndSubmit(transcript);
     };
 
-    recognition.onerror = (event) => {
-      console.error("Speech recognition error:", event.error);
-      resetBtn();
-    };
-
-    recognition.onend = () => {
-      resetBtn();
-    };
-
+    recognition.onerror = () => resetFab();
+    recognition.onend = () => resetFab();
     recognition.start();
   }
 
-  function resetBtn() {
+  function resetFab() {
     isListening = false;
-    if (btn) {
-      btn.innerHTML = "🎤";
-      btn.style.borderColor = "#7c3aed";
+    const fab = document.getElementById("sole-mic-fab");
+    if (fab) {
+      fab.innerHTML = "🎤";
+      fab.style.background = "linear-gradient(135deg, #7c3aed, #4f46e5)";
+      fab.style.boxShadow = "0 4px 14px rgba(124,58,237,0.5)";
     }
   }
 
   function fillAndSubmit(text) {
-    // Find Chainlit's textarea and submit button
-    const textarea = document.querySelector("#chat-input");
-    const submitBtn = document.querySelector('[data-testid="send-button"]');
+    // Find Chainlit's textarea by placeholder or tag
+    const textarea =
+      document.querySelector('textarea[placeholder]') ||
+      document.querySelector("textarea");
 
-    if (textarea) {
-      // React-controlled input — need to trigger synthetic event
-      const nativeInputSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLTextAreaElement.prototype,
-        "value"
-      ).set;
-      nativeInputSetter.call(textarea, text);
-      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    if (!textarea) return;
 
-      // Small delay then submit
-      setTimeout(() => {
-        if (submitBtn) submitBtn.click();
-      }, 150);
-    }
+    // Trigger React's synthetic input event
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value"
+    ).set;
+    nativeSetter.call(textarea, text);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+
+    // Give React a moment to update state then click submit
+    setTimeout(() => {
+      const submitBtn =
+        document.querySelector('button[type="submit"]') ||
+        document.querySelector("button[data-testid='send-button']") ||
+        [...document.querySelectorAll("button")].find(
+          (b) => b.querySelector("svg") && b.style.background?.includes("rgb")
+        );
+      if (submitBtn) submitBtn.click();
+    }, 200);
   }
 
-  // Watch for new assistant messages and read them aloud
-  function observeMessages() {
+  // ── Text-to-Speech for assistant replies ───────────────────────────────────
+  let lastSpokenText = "";
+
+  function observeAndSpeak() {
+    const target = document.querySelector("#chat-messages") || document.body;
     const observer = new MutationObserver(() => {
-      const messages = document.querySelectorAll(".message-content p");
-      if (messages.length === 0) return;
-      const last = messages[messages.length - 1];
-      if (last && last.dataset.spoken !== "true") {
-        last.dataset.spoken = "true";
-        // Only speak assistant messages (not the welcome message on load)
-        const isAssistant = last.closest(".assistant");
-        if (isAssistant) speak(last.innerText);
+      // Find all assistant message paragraphs
+      const paras = document.querySelectorAll(
+        '.message[data-author="assistant"] p, .assistant p, [class*="assistant"] p'
+      );
+      if (!paras.length) return;
+      const last = paras[paras.length - 1];
+      const text = last.innerText?.trim();
+      if (text && text !== lastSpokenText) {
+        lastSpokenText = text;
+        speak(text);
       }
     });
-
-    const chatContainer = document.querySelector("#chat-messages");
-    if (chatContainer) {
-      observer.observe(chatContainer, { childList: true, subtree: true });
-    }
+    observer.observe(target, { childList: true, subtree: true });
   }
 
-  // Poll until Chainlit renders
-  const interval = setInterval(() => {
-    injectButton();
-    if (document.getElementById("sole-voice-btn")) {
-      observeMessages();
-      clearInterval(interval);
-    }
-  }, 800);
+  function speak(text) {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang = "en-US";
+    utt.rate = 1.05;
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(
+      (v) =>
+        v.name.includes("Samantha") ||
+        v.name.includes("Google US English") ||
+        v.name.includes("Microsoft Aria")
+    );
+    if (preferred) utt.voice = preferred;
+    window.speechSynthesis.speak(utt);
+  }
+
+  // ── Boot ───────────────────────────────────────────────────────────────────
+  function boot() {
+    createFloatingButton();
+    observeAndSpeak();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    // Chainlit is a SPA — wait a tick for React to mount
+    setTimeout(boot, 800);
+  }
 })();

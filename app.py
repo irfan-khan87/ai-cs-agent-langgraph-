@@ -1,6 +1,6 @@
 import json
 import chainlit as cl
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from agent.graph import graph
 
 
@@ -15,7 +15,7 @@ async def on_chat_start():
             "- Your **email address** or **full name**\n"
             "- Your **Order ID** (e.g. `ORD-001`)\n"
             "- A brief description of your issue\n\n"
-            "*You can also use the 🎤 microphone button below to speak your request.*"
+            "*You can also use the 🎤 floating mic button to speak your request.*"
         )
     ).send()
 
@@ -25,49 +25,48 @@ async def on_message(message: cl.Message):
     history = cl.user_session.get("messages", [])
     history.append(HumanMessage(content=message.content))
 
-    response_msg = cl.Message(content="")
-    await response_msg.send()
-
     state = {"messages": history}
     final_text = ""
+    current_step = None
 
     async for event in graph.astream_events(state, version="v2"):
         kind = event["event"]
 
-        # Stream LLM text tokens
-        if kind == "on_chat_model_stream":
-            chunk = event["data"]["chunk"]
-            if hasattr(chunk, "content") and chunk.content:
-                token = chunk.content
-                if isinstance(token, list):
-                    token = "".join(
-                        p.get("text", "") for p in token if isinstance(p, dict)
-                    )
-                if token:
-                    await response_msg.stream_token(token)
-                    final_text += token
-
-        # Show tool calls as reasoning steps
-        elif kind == "on_tool_start":
+        # Show each tool call as a live reasoning step
+        if kind == "on_tool_start":
             tool_name = event["name"]
             tool_input = event["data"].get("input", {})
-            async with cl.Step(name=f"🔧 {tool_name}", type="tool") as step:
-                step.input = json.dumps(tool_input, indent=2)
-                cl.user_session.set("current_step", step)
+            current_step = cl.Step(name=f"🔧 {tool_name}", type="tool")
+            await current_step.send()
+            current_step.input = json.dumps(tool_input, indent=2)
+            await current_step.update()
 
         elif kind == "on_tool_end":
-            step = cl.user_session.get("current_step")
-            if step:
+            if current_step:
                 output = event["data"].get("output", "")
                 if hasattr(output, "content"):
                     output = output.content
-                step.output = str(output)
-                await step.update()
+                current_step.output = str(output)
+                await current_step.update()
+                current_step = None
 
-    await response_msg.update()
+        # Grab the final AI message from the completed graph state
+        elif kind == "on_chain_end":
+            output = event["data"].get("output", {})
+            if isinstance(output, dict):
+                msgs = output.get("messages", [])
+                if msgs:
+                    last = msgs[-1]
+                    content = getattr(last, "content", "")
+                    tool_calls = getattr(last, "tool_calls", [])
+                    if content and not tool_calls:
+                        final_text = content if isinstance(content, str) else str(content)
 
-    # Update history with full assistant response
-    all_messages = graph.get_state({"configurable": {}}) if False else None
-    history.append(AIMessage(content=final_text))
+    # Send the final response as a new message after all steps are shown
+    if final_text:
+        await cl.Message(content=final_text).send()
+        history.append(AIMessage(content=final_text))
+    else:
+        await cl.Message(content="⚠️ I wasn't able to generate a response. Please try again.").send()
+
     cl.user_session.set("messages", history)
-
